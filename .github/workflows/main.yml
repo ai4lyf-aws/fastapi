@@ -1,0 +1,87 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACCOUNT_ID: ${{ secrets.ACCOUNT_ID }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  IMAGE_TAG: ${{ github.sha }}
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+  ECS_CLUSTER_NAME: ${{ secrets.ECS_CLUSTER_NAME }}
+  ECS_SERVICE_NAME: ${{ secrets.ECS_SERVICE_NAME }}
+  TASK_FAMILY: ${{ secrets.ECS_SERVICE_NAME }}-task
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          role-to-assume: arn:aws:iam::${{ env.ACCOUNT_ID }}:role/GithubActionsRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Register task definition in ECS
+        env:
+          IMAGE_URI: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}
+        run: |
+          # Export environment variables to use in envsubst
+          export IMAGE_URI=${{ env.IMAGE_URI }}
+          export ACCOUNT_ID=${{ env.ACCOUNT_ID }}
+          export AWS_REGION=${{ env.AWS_REGION }}
+          export TASK_FAMILY=${{ env.TASK_FAMILY }}
+          export SERVICE_NAME=${{ env.ECS_SERVICE_NAME }}
+
+          # Use envsubst to replace placeholders with actual values
+          envsubst < ".aws/task.json.template" > ".aws/task.json"
+
+          # Register the task definition in ECS
+          aws ecs register-task-definition --cli-input-json file://".aws/task.json"
+
+          echo "Task definition registered successfully."
+
+      - name: Deploy ECS service
+        run: |
+          echo "Updating ECS service..."
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER_NAME }} \
+            --service ${{ env.ECS_SERVICE_NAME }} \
+            --task-definition ${{ env.TASK_FAMILY }} \
+            --force-new-deployment
+
+          echo "Deployment completed."
