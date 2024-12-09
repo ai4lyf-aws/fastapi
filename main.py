@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 
 app = FastAPI(
-    root_path="/fastapi"
+    root_path="/s/fastapi"
 )
 
 @app.get("/", status_code=200)
